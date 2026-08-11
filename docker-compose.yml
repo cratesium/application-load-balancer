@@ -1,0 +1,119 @@
+#
+# Demonstration topology.
+#
+#                        client (curl / k6 / wrk)
+#                                  │
+#                                  ▼
+#                        ┌───────────────────┐
+#                        │   load-balancer   │  :8080  (published)
+#                        └─────────┬─────────┘
+#              ┌───────────────────┼───────────────────┐
+#              ▼                   ▼                   ▼
+#        ┌───────────┐       ┌───────────┐       ┌───────────┐
+#        │ backend-1 │       │ backend-2 │       │ backend-3 │
+#        │   :8080   │       │   :8080   │       │   :8080   │
+#        └───────────┘       └───────────┘       └───────────┘
+#
+# Backends listen on 8080 inside the network and are also published on 9001-9003 so the
+# demo scripts can talk to them directly — to flip a backend's health and watch the ALB
+# react, which is the point of the exercise.
+#
+# Start it:   docker compose up --build
+# Watch it:   ./scripts/demo-all.sh
+#
+services:
+
+  load-balancer:
+    build:
+      context: .
+      dockerfile: load-balancer/Dockerfile
+    container_name: alb
+    ports:
+      - "8080:8080"
+    environment:
+      # Backends are addressed by service name: Docker's DNS resolves them, and a restarted
+      # container is picked up because the pool's max-life-time forces periodic reconnection.
+      BACKEND_1_HOST: backend-1
+      BACKEND_1_PORT: 8080
+      BACKEND_2_HOST: backend-2
+      BACKEND_2_PORT: 8080
+      BACKEND_3_HOST: backend-3
+      BACKEND_3_PORT: 8080
+
+      ALB_ALGORITHM: ROUND_ROBIN
+
+      # Demo value. In a real deployment this comes from a secret store, never from compose.
+      ALB_ADMIN_TOKEN: demo-token-please-change-me-32chars
+
+      SPRING_PROFILES_ACTIVE: json-logs
+
+      # Trust the compose network so X-Forwarded-For from these peers is honoured. Without
+      # this the ALB would ignore the header, which is the correct default when internet-facing.
+      ALB_TRUSTED_PROXIES: 172.16.0.0/12
+    depends_on:
+      backend-1:
+        condition: service_healthy
+      backend-2:
+        condition: service_healthy
+      backend-3:
+        condition: service_healthy
+    networks: [alb-net]
+    # SIGTERM starts the drain; give it more than shutdown.grace-period so Docker does not
+    # SIGKILL the process part-way through draining.
+    stop_grace_period: 45s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  backend-1:
+    build:
+      context: .
+      dockerfile: demo-backend/Dockerfile
+    container_name: backend-1
+    environment:
+      SERVER_NAME: backend-1
+      SERVER_PORT: 8080
+    ports:
+      - "9001:8080"
+    networks: [alb-net]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  backend-2:
+    build:
+      context: .
+      dockerfile: demo-backend/Dockerfile
+    container_name: backend-2
+    environment:
+      SERVER_NAME: backend-2
+      SERVER_PORT: 8080
+    ports:
+      - "9002:8080"
+    networks: [alb-net]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  backend-3:
+    build:
+      context: .
+      dockerfile: demo-backend/Dockerfile
+    container_name: backend-3
+    environment:
+      SERVER_NAME: backend-3
+      SERVER_PORT: 8080
+    ports:
+      - "9003:8080"
+    networks: [alb-net]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+networks:
+  alb-net:
+    driver: bridge

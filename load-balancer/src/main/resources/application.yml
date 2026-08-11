@@ -1,0 +1,208 @@
+#
+# Application Load Balancer configuration.
+#
+# Everything about topology and behaviour lives here. Nothing in this block is
+# duplicated in Java code — there are no hardcoded hosts, ports, timeouts or
+# thresholds anywhere in the source.
+#
+load-balancer:
+
+  # The socket the ALB accepts client traffic on. Authoritative over server.port.
+  listen:
+    host: ${ALB_LISTEN_HOST:0.0.0.0}
+    port: ${ALB_LISTEN_PORT:8080}
+
+  # ROUND_ROBIN | WEIGHTED_ROUND_ROBIN | RANDOM | LEAST_CONNECTIONS
+  # WEIGHTED_LEAST_CONNECTIONS | IP_HASH | CONSISTENT_HASH
+  # Changeable at runtime: POST /admin/load-balancer/algorithm
+  algorithm: ${ALB_ALGORITHM:ROUND_ROBIN}
+
+  # The global backend pool. Add, remove, enable, disable and reweight at runtime
+  # through /admin/backends.
+  backends:
+    - id: backend-1
+      host: ${BACKEND_1_HOST:localhost}
+      port: ${BACKEND_1_PORT:9001}
+      weight: 1
+      enabled: true
+
+    - id: backend-2
+      host: ${BACKEND_2_HOST:localhost}
+      port: ${BACKEND_2_PORT:9002}
+      weight: 1
+      enabled: true
+
+    - id: backend-3
+      host: ${BACKEND_3_HOST:localhost}
+      port: ${BACKEND_3_PORT:9003}
+      weight: 1
+      enabled: true
+
+  # Optional route-specific pools. Evaluated in order, first match wins.
+  # Without any routes, every request uses the global pool above.
+  # A matched route whose backends are all unavailable returns 503 — it does NOT
+  # fall back to the global pool, because sending /api/orders to the users
+  # service would be worse than failing.
+  routes: []
+  # Example:
+  # routes:
+  #   - id: users-api
+  #     path: /api/users/**
+  #     backends: [backend-1, backend-2]
+  #   - id: orders-writes
+  #     path: /api/orders/**
+  #     methods: [POST, PUT, DELETE]
+  #     backends: [backend-3]
+  #     algorithm: LEAST_CONNECTIONS      # per-route override
+  #   - id: orders-reads
+  #     path: /api/orders/**
+  #     methods: [GET]
+  #     backends: [backend-1, backend-2]
+
+  consistent-hash:
+    # Virtual nodes per unit of weight. Higher is more even but costs more to
+    # rebuild; 100 keeps imbalance to a few percent.
+    virtual-nodes: 100
+
+  health-check:
+    enabled: true
+    path: /health
+    interval: 5s
+    connect-timeout: 2s
+    response-timeout: 3s
+    initial-delay: 0s
+    # 3 consecutive failures to go DOWN, 2 consecutive successes to come back UP.
+    # Asymmetric on purpose: quick to remove, cautious to re-admit.
+    failure-threshold: 3
+    success-threshold: 2
+    # Empty means "any 2xx is healthy".
+    healthy-statuses: []
+    # true: backends start UP and are demoted if they fail (no cold-start 503 window).
+    # false: backends start DOWN and must pass success-threshold probes first.
+    assume-healthy-on-start: true
+
+  # Real traffic is a health signal too. Reacts in milliseconds where active
+  # checks take up to interval x failure-threshold.
+  passive-health:
+    enabled: true
+    failure-threshold: 5
+    window: 30s
+
+  timeouts:
+    connection: 2s      # TCP connect
+    response: 10s       # time to first response byte from a backend
+    request: 30s        # end-to-end budget for one client request, including retries
+    idle: 60s           # idle client connections are closed (Slowloris mitigation)
+
+  # Limits apply PER BACKEND: Reactor Netty keys its pools by remote address, so
+  # one saturated backend cannot starve the others of connections.
+  connection-pool:
+    max-connections: 500
+    pending-acquire-timeout: 5s
+    # Must stay below the backends' own keep-alive timeout, or the ALB will hand
+    # out connections the backend is concurrently closing (the classic random-502 cause).
+    max-idle-time: 30s
+    max-life-time: 5m
+    evict-in-background: 2m
+
+  retry:
+    enabled: true
+    max-attempts: 2                       # total attempts, so one retry
+    methods: [GET, HEAD, OPTIONS]         # idempotent only; see README before adding POST
+    retryable-statuses: [502, 503, 504]   # never 4xx, never 500
+    backoff: 20ms
+    # Retrying a request with a body means replaying it, which means buffering it.
+    # Off by default so a streaming proxy does not silently start holding bodies.
+    buffer-request-body: false
+    max-buffered-body: 256KB
+
+  circuit-breaker:
+    enabled: true
+    sliding-window-size: 20      # max 64 (the window is a 64-bit bitset)
+    minimum-calls: 10            # no tripping on the first couple of failures
+    failure-rate-threshold: 50   # percent
+    open-duration: 10s           # cooldown before probing again
+    half-open-max-calls: 3
+    half-open-successes-to-close: 2
+
+  draining:
+    timeout: 30s
+    check-interval: 1s
+
+  shutdown:
+    grace-period: 30s
+
+  limits:
+    max-request-body: 10MB
+    max-header-size: 16KB
+    max-initial-line-length: 8KB
+    max-concurrent-requests: 10000   # beyond this the ALB sheds load with 503
+    max-pending-requests: 5000       # queue bound per backend connection pool
+
+  admin:
+    enabled: true
+    # NEVER hardcode this. Unset means every admin call is rejected (fail closed).
+    token: ${ALB_ADMIN_TOKEN:}
+    path-prefix: /admin
+
+  proxy:
+    # false: backends receive Host: <their own authority> (the usual choice).
+    # true: the client's Host header is passed through, for virtual-hosted backends.
+    preserve-host-header: false
+    add-forwarded-headers: true
+    # X-Forwarded-For is only believed from these peers. Empty = trust nothing,
+    # which is the only safe default when the ALB may face the internet.
+    # Comma-separated so it can be set from a single environment variable, e.g.
+    #   ALB_TRUSTED_PROXIES=10.0.0.0/8,172.16.0.0/12,2001:db8::/32
+    trusted-proxies: ${ALB_TRUSTED_PROXIES:}
+    request-id-header: X-Request-ID
+
+server:
+  # Mirrors load-balancer.listen so Boot's own startup logging is accurate;
+  # ServerConfig applies the authoritative value.
+  port: ${ALB_LISTEN_PORT:8080}
+  shutdown: graceful
+
+spring:
+  application:
+    name: load-balancer
+  main:
+    banner-mode: off
+  lifecycle:
+    # Must exceed load-balancer.shutdown.grace-period, or Spring stops waiting
+    # before the ALB has finished draining.
+    timeout-per-shutdown-phase: 40s
+  jackson:
+    default-property-inclusion: non_null
+
+management:
+  endpoints:
+    web:
+      base-path: /actuator
+      exposure:
+        # Deliberately narrow. env/configprops/heapdump would expose the admin
+        # token and internal topology to anything that can reach the port.
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true          # /actuator/health/liveness and /readiness
+      show-details: never      # never leak component details to unauthenticated callers
+      group:
+        readiness:
+          include: readinessState
+  metrics:
+    tags:
+      application: load-balancer
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+logging:
+  level:
+    root: INFO
+    com.example.loadbalancer: INFO
+    # Set to DEBUG to trace individual health probes and routing decisions.
+    com.example.loadbalancer.access: INFO
+    reactor.netty: WARN

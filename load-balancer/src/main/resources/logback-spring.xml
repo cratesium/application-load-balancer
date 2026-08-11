@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Two logging shapes, selected by profile:
+
+    default        human-readable console output, request id inlined from the MDC
+    json-logs      one JSON object per line, every MDC field a queryable JSON field
+
+  Run with SPRING_PROFILES_ACTIVE=json-logs in any environment that ships logs to an
+  aggregator. The Docker image sets it by default.
+
+  Note what is absent: there is no appender that logs headers or bodies. Authorization,
+  Cookie, tokens and payloads never reach a log statement in this application, so there is
+  no redaction filter to keep up to date and no filter to accidentally misconfigure.
+-->
+<configuration>
+
+    <property name="CONSOLE_PATTERN"
+              value="%d{HH:mm:ss.SSS} %-5level [%thread] %logger{28} %X{requestId:-} - %msg%n"/>
+
+    <springProfile name="!json-logs">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>${CONSOLE_PATTERN}</pattern>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="json-logs">
+        <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <!-- Custom layout: see JsonLogLayout for why this is not logstash-logback-encoder. -->
+            <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
+                <layout class="com.example.loadbalancer.observability.JsonLogLayout"/>
+            </encoder>
+        </appender>
+
+        <!--
+          Async wrapper: log I/O must never block a Netty event loop. The queue is bounded
+          and neverBlock=true, so under a log flood lines are dropped rather than stalling
+          request processing. A dropped log line is a cost; a stalled event loop is an outage.
+        -->
+        <appender name="ASYNC_JSON" class="ch.qos.logback.classic.AsyncAppender">
+            <queueSize>8192</queueSize>
+            <discardingThreshold>0</discardingThreshold>
+            <neverBlock>true</neverBlock>
+            <includeCallerData>false</includeCallerData>
+            <appender-ref ref="JSON"/>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="ASYNC_JSON"/>
+        </root>
+    </springProfile>
+
+    <logger name="com.example.loadbalancer" level="INFO"/>
+    <logger name="com.example.loadbalancer.access" level="INFO"/>
+    <logger name="reactor.netty" level="WARN"/>
+    <logger name="io.netty" level="WARN"/>
+
+</configuration>
