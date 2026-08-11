@@ -1,0 +1,19 @@
+server:
+  port: ${SERVER_PORT:9001}
+  shutdown: graceful
+
+demo:
+  # Echoed in every response so the caller can see which instance answered.
+  server-name: ${SERVER_NAME:backend}
+
+spring:
+  application:
+    name: demo-backend
+  main:
+    banner-mode: off
+
+logging:
+  level:
+    root: INFO
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [${SERVER_NAME:backend}] %logger{20} - %msg%n"
