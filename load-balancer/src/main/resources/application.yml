@@ -145,6 +145,11 @@ load-balancer:
     token: ${ALB_ADMIN_TOKEN:}
     path-prefix: /admin
 
+  console:
+    # The management console UI, served as a single-page application.
+    # Access it at http://<alb-host>:<port>/console
+    path-prefix: /console
+
   proxy:
     # false: backends receive Host: <their own authority> (the usual choice).
     # true: the client's Host header is passed through, for virtual-hosted backends.

@@ -49,19 +49,22 @@ public class ProxyWebFilter implements WebFilter, Ordered {
     private final LoadBalancerMetrics metrics;
     private final String adminPrefix;
     private final String actuatorPrefix;
+    private final String consolePrefix;
 
     public ProxyWebFilter(ProxyService proxyService,
                           ConcurrencyLimiter concurrencyLimiter,
                           ReadinessManager readinessManager,
                           LoadBalancerMetrics metrics,
                           LoadBalancerProperties properties,
-                          @Value("${management.endpoints.web.base-path:/actuator}") String actuatorPrefix) {
+                          @Value("${management.endpoints.web.base-path:/actuator}") String actuatorPrefix,
+                          @Value("${load-balancer.console.path-prefix:/console}") String consolePrefix) {
         this.proxyService = proxyService;
         this.concurrencyLimiter = concurrencyLimiter;
         this.readinessManager = readinessManager;
         this.metrics = metrics;
         this.adminPrefix = normalise(properties.admin().pathPrefix());
         this.actuatorPrefix = normalise(actuatorPrefix);
+        this.consolePrefix = normalise(consolePrefix);
     }
 
     @Override
@@ -97,7 +100,7 @@ public class ProxyWebFilter implements WebFilter, Ordered {
      *         ALB's own health lives under the actuator prefix.
      */
     private boolean isManagementPath(String path) {
-        return isUnder(path, adminPrefix) || isUnder(path, actuatorPrefix);
+        return isUnder(path, adminPrefix) || isUnder(path, actuatorPrefix) || isUnder(path, consolePrefix);
     }
 
     private static boolean isUnder(String path, String prefix) {
