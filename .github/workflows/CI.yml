@@ -14,7 +14,9 @@ permissions:
 
 jobs:
 
-
+  # ==========================================================
+  # 1. BUILD + TEST
+  # ==========================================================
   build-test:
     name: Build & Verify Tests
     runs-on: ubuntu-latest
@@ -34,12 +36,14 @@ jobs:
         run: mvn clean verify
 
 
-
+  # ==========================================================
+  # 2. SONARQUBE
+  # ==========================================================
   sonar:
     name: SonarQube Analysis
     runs-on: ubuntu-latest
 
-    # Sonar runs only if build + tests passed
+    # Sonar runs only if build and tests pass
     needs: build-test
 
     steps:
@@ -58,6 +62,8 @@ jobs:
       - name: SonarQube Analysis
         run: >
           mvn sonar:sonar
+          -Dsonar.organization="${{ secrets.SONAR_ORGANIZATION }}"
+          -Dsonar.projectKey="${{ secrets.SONAR_PROJECT_KEY }}"
           -Dsonar.qualitygate.wait=true
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
