@@ -42,6 +42,11 @@
                         <reuseForks>true</reuseForks>
                     </configuration>
                 </plugin>
+                <plugin>
+                    <groupId>org.sonarsource.scanner.maven</groupId>
+                    <artifactId>sonar-maven-plugin</artifactId>
+                    <version>5.4.0.6335</version>
+                </plugin>
             </plugins>
         </pluginManagement>
     </build>
