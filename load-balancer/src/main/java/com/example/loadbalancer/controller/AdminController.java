@@ -92,11 +92,7 @@ public class AdminController {
         this.configurationReloader = configurationReloader;
     }
 
-    // ------------------------------------------------------------------
-    // Status
-    // ------------------------------------------------------------------
 
-    /** {@code GET /admin/status} — one-glance view of what the ALB is doing. */
     @GetMapping("/status")
     public Mono<AdminDtos.StatusView> status() {
         return Mono.fromSupplier(() -> new AdminDtos.StatusView(
@@ -117,7 +113,7 @@ public class AdminController {
     // Backends
     // ------------------------------------------------------------------
 
-    /** {@code GET /admin/backends} */
+
     @GetMapping("/backends")
     public Mono<List<BackendView>> listBackends() {
         return Mono.fromSupplier(() -> backendRegistry.all().stream()
@@ -125,7 +121,6 @@ public class AdminController {
                 .toList());
     }
 
-    /** {@code GET /admin/backends/{id}} */
     @GetMapping("/backends/{id}")
     public Mono<ResponseEntity<BackendView>> getBackend(@PathVariable String id) {
         return Mono.fromSupplier(() -> backendRegistry.find(id)
