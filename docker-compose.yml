@@ -18,9 +18,29 @@
 # demo scripts can talk to them directly — to flip a backend's health and watch the ALB
 # react, which is the point of the exercise.
 #
+# Supporting services (all on alb-net, reachable by service name):
+#   prometheus  :9090   scrapes the ALB and backends (config is inlined under `configs:`)
+#   grafana     :3000   dashboards, Prometheus pre-provisioned as a data source
+#   mysql       :3306   connect from TablePlus at 127.0.0.1:3306
+#   adminer     :8081   web DB UI, pre-pointed at the mysql service
+#   redis       :6379   connect from TablePlus at 127.0.0.1:6379
+#   redash      :5050   BI / SQL dashboards (own Postgres + worker + scheduler)
+#   adminer     :8081   web UI for MySQL (server: mysql, user: root, password: root)
+#
 # Start it:   docker compose up --build
 # Watch it:   ./scripts/demo-all.sh
 #
+# Requires Docker Compose v2.23.1+ (inline `configs: content:` support).
+#
+x-redash-env: &redash-env
+  # Demo values. Generate real ones with: openssl rand -hex 32
+  REDASH_DATABASE_URL: postgresql://redash:redash@redash-postgres/redash
+  # Shares the existing redis service, isolated on logical DB 1.
+  REDASH_REDIS_URL: redis://redis:6379/1
+  REDASH_COOKIE_SECRET: demo-cookie-secret-change-me
+  REDASH_SECRET_KEY: demo-secret-key-change-me
+  REDASH_LOG_LEVEL: INFO
+
 services:
 
   load-balancer:
@@ -113,6 +133,245 @@ services:
       resources:
         limits:
           memory: 256M
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    configs:
+      - source: prometheus_config
+        target: /etc/prometheus/prometheus.yml
+    volumes:
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+    networks: [alb-net]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      # Demo values. Use a secret store in a real deployment.
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    configs:
+      # Auto-registers Prometheus as the default data source.
+      - source: grafana_datasource
+        target: /etc/grafana/provisioning/datasources/prometheus.yml
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks: [alb-net]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  mysql:
+    image: mysql:8.4
+    container_name: mysql
+    ports:
+      - "3306:3306"
+    environment:
+      # Demo values. Use a secret store in a real deployment.
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: alb
+      MYSQL_USER: alb
+      MYSQL_PASSWORD: alb
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [alb-net]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  adminer:
+    image: adminer:latest
+    container_name: adminer
+    ports:
+      # 8080 is taken by the ALB, so Adminer is published on 8081.
+      - "8081:8080"
+    environment:
+      # Pre-fills the "Server" field with the mysql service name.
+      ADMINER_DEFAULT_SERVER: mysql
+      ADMINER_DESIGN: pepa-linha
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks: [alb-net]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [alb-net]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  redash-postgres:
+    image: postgres:16-alpine
+    container_name: redash-postgres
+    environment:
+      POSTGRES_USER: redash
+      POSTGRES_PASSWORD: redash
+      POSTGRES_DB: redash
+    volumes:
+      - redash-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U redash -d redash"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [alb-net]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # One-shot: creates Redash's metadata tables on first run, then exits (idempotent).
+  redash-init:
+    image: redash/redash:26.3.0
+    container_name: redash-init
+    command: create_db
+    environment: *redash-env
+    depends_on:
+      redash-postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [alb-net]
+    restart: "no"
+
+  redash:
+    image: redash/redash:26.3.0
+    container_name: redash
+    command: server
+    ports:
+      # 5000 is taken by AirPlay Receiver on macOS, so publish on 5050.
+      - "5050:5000"
+    environment:
+      <<: *redash-env
+      REDASH_WEB_WORKERS: 2
+    depends_on:
+      redash-init:
+        condition: service_completed_successfully
+    networks: [alb-net]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+  redash-scheduler:
+    image: redash/redash:26.3.0
+    container_name: redash-scheduler
+    command: scheduler
+    environment: *redash-env
+    depends_on:
+      redash-init:
+        condition: service_completed_successfully
+    networks: [alb-net]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  redash-worker:
+    image: redash/redash:26.3.0
+    container_name: redash-worker
+    command: worker
+    environment:
+      <<: *redash-env
+      WORKERS_COUNT: 2
+    depends_on:
+      redash-init:
+        condition: service_completed_successfully
+    networks: [alb-net]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+configs:
+  prometheus_config:
+    content: |
+      global:
+        scrape_interval: 5s
+        evaluation_interval: 15s
+
+      scrape_configs:
+        - job_name: prometheus
+          static_configs:
+            - targets: ["localhost:9090"]
+
+        # Assumes Spring Boot Actuator exposes /actuator/prometheus on the app port.
+        # Adjust metrics_path / port if your management endpoint differs.
+        - job_name: alb
+          metrics_path: /actuator/prometheus
+          static_configs:
+            - targets: ["load-balancer:8080"]
+
+        - job_name: backends
+          metrics_path: /actuator/prometheus
+          static_configs:
+            - targets: ["backend-1:8080", "backend-2:8080", "backend-3:8080"]
+
+  grafana_datasource:
+    content: |
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          access: proxy
+          url: http://prometheus:9090
+          isDefault: true
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  mysql-data:
+  redis-data:
+  redash-postgres-data:
 
 networks:
   alb-net:
